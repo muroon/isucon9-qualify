@@ -62,9 +62,10 @@ const (
 )
 
 var (
-	templates *template.Template
-	dbx       *sqlx.DB
-	store     sessions.Store
+	templates   *template.Template
+	dbx         *sqlx.DB
+	store       sessions.Store
+	categoryMap map[int]Category
 )
 
 type Config struct {
@@ -278,6 +279,8 @@ func init() {
 	templates = template.Must(template.ParseFiles(
 		"../public/index.html",
 	))
+
+	categoryMap = make(map[int]Category)
 }
 
 func main() {
@@ -320,6 +323,10 @@ func main() {
 		log.Fatalf("failed to connect to DB: %s.", err.Error())
 	}
 	defer dbx.Close()
+
+	if err = initAllCategories(dbx); err != nil {
+		log.Fatalf("failed to init all categories: %s.", err.Error())
+	}
 
 	mux := goji.NewMux()
 
@@ -412,8 +419,31 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 	return userSimple, err
 }
 
+// initAllCategories 全キャッシュ
+func initAllCategories(q sqlx.Queryer) error {
+	categories := []Category{}
+	err := sqlx.Select(q, &categories, "SELECT * FROM categories")
+	if err != nil {
+		return err
+	}
+	for _, category := range categories {
+		categoryMap[category.ID] = category
+	}
+	return nil
+}
+
 func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err error) {
-	err = sqlx.Get(q, &category, "SELECT * FROM `categories` WHERE `id` = ?", categoryID)
+	// categoryMap categoriesの更新がないため、ロックは行わない
+	var ok bool
+	category, ok = categoryMap[categoryID]
+	if !ok {
+		err = sqlx.Get(q, &category, "SELECT * FROM `categories` WHERE `id` = ?", categoryID)
+		if err != nil {
+			return category, err
+		}
+		categoryMap[categoryID] = category
+	}
+
 	if category.ParentID != 0 {
 		parentCategory, err := getCategoryByID(q, category.ParentID)
 		if err != nil {
