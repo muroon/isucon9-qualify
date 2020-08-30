@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "net/http/pprof"
@@ -66,6 +67,8 @@ var (
 	dbx         *sqlx.DB
 	store       sessions.Store
 	categoryMap map[int]Category
+	userMap     map[int64]User
+	userMux     sync.RWMutex
 )
 
 type Config struct {
@@ -281,6 +284,7 @@ func init() {
 	))
 
 	categoryMap = make(map[int]Category)
+	userMap = make(map[int64]User)
 }
 
 func main() {
@@ -326,6 +330,10 @@ func main() {
 
 	if err = initAllCategories(dbx); err != nil {
 		log.Fatalf("failed to init all categories: %s.", err.Error())
+	}
+
+	if err = initAllUsers(dbx); err != nil {
+		log.Fatalf("failed to init all users: %s.", err.Error())
 	}
 
 	mux := goji.NewMux()
@@ -395,7 +403,13 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 		return user, http.StatusNotFound, "no session"
 	}
 
-	err := dbx.Get(&user, "SELECT * FROM `users` WHERE `id` = ?", userID)
+	uid, ok := userID.(int64)
+	if !ok {
+		return user, http.StatusNotFound, "no session"
+	}
+
+	var err error
+	user, err = getUserInstance(dbx, uid)
 	if err == sql.ErrNoRows {
 		return user, http.StatusNotFound, "user not found"
 	}
@@ -407,9 +421,52 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 	return user, http.StatusOK, ""
 }
 
-func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err error) {
-	user := User{}
+func getUserInstance(q sqlx.Queryer, userID int64) (user User, err error) {
+	var ok bool
+	userMux.RLock()
+	if user, ok = userMap[userID]; ok {
+		userMux.RUnlock()
+		return user, nil
+	}
+	userMux.RUnlock()
+
+	user = User{}
 	err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
+	if err != nil {
+		return user, err
+	}
+
+	userMux.Lock()
+	userMap[userID] = user
+	userMux.Unlock()
+
+	return user, err
+}
+
+func deleteUserMap(userID int64) {
+	userMux.Lock()
+	delete(userMap, userID)
+	userMux.Unlock()
+}
+
+func initAllUsers(q sqlx.Queryer) error {
+	users := []User{}
+	err := sqlx.Select(q, &users, "SELECT * FROM users")
+	if err != nil {
+		return err
+	}
+
+	userMux.Lock()
+	for _, user := range users {
+		userMap[user.ID] = user
+	}
+	userMux.Unlock()
+
+	return nil
+}
+
+func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err error) {
+	user, err := getUserInstance(q, userID)
 	if err != nil {
 		return userSimple, err
 	}
@@ -2056,6 +2113,8 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	}
 	tx.Commit()
 
+	deleteUserMap(seller.ID)
+
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resSell{ID: itemID})
 }
@@ -2154,6 +2213,8 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
 	}
+
+	deleteUserMap(seller.ID)
 
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ?", itemID)
 	if err != nil {
