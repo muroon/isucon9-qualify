@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/isucon/isucon9-qualify/webapp/go/apm"
 	"html/template"
 	"io/ioutil"
 	"log"
@@ -322,6 +323,14 @@ func main() {
 		dbname,
 	)
 
+	// NewRelic
+	newrelicAppName := os.Getenv("NEW_RELIC_APP_NAME") // example: isucon9-qualify-muroon
+	newrelicLicense := os.Getenv("NEW_RELIC_LICENSE")
+	err = apm.Setup(newrelicAppName, newrelicLicense)
+	if err != nil {
+		log.Fatalf("failed to NewRelic: %s.", err.Error())
+	}
+
 	dbx, err = sqlx.Open("mysql", dsn)
 	if err != nil {
 		log.Fatalf("failed to connect to DB: %s.", err.Error())
@@ -339,38 +348,39 @@ func main() {
 	mux := goji.NewMux()
 
 	// API
-	mux.HandleFunc(pat.Post("/initialize"), postInitialize)
-	mux.HandleFunc(pat.Get("/new_items.json"), getNewItems)
-	mux.HandleFunc(pat.Get("/new_items/:root_category_id.json"), getNewCategoryItems)
-	mux.HandleFunc(pat.Get("/users/transactions.json"), getTransactions)
-	mux.HandleFunc(pat.Get("/users/:user_id.json"), getUserItems)
-	mux.HandleFunc(pat.Get("/items/:item_id.json"), getItem)
-	mux.HandleFunc(pat.Post("/items/edit"), postItemEdit)
-	mux.HandleFunc(pat.Post("/buy"), postBuy)
-	mux.HandleFunc(pat.Post("/sell"), postSell)
-	mux.HandleFunc(pat.Post("/ship"), postShip)
-	mux.HandleFunc(pat.Post("/ship_done"), postShipDone)
-	mux.HandleFunc(pat.Post("/complete"), postComplete)
-	mux.HandleFunc(pat.Get("/transactions/:transaction_evidence_id.png"), getQRCode)
-	mux.HandleFunc(pat.Post("/bump"), postBump)
-	mux.HandleFunc(pat.Get("/settings"), getSettings)
-	mux.HandleFunc(pat.Post("/login"), postLogin)
-	mux.HandleFunc(pat.Post("/register"), postRegister)
-	mux.HandleFunc(pat.Get("/reports.json"), getReports)
+	apm.HandleFunc(mux, pat.Post("/initialize"), postInitialize)
+	apm.HandleFunc(mux, pat.Get("/new_items.json"), getNewItems)
+	apm.HandleFunc(mux, pat.Get("/new_items/:root_category_id.json"), getNewCategoryItems)
+	apm.HandleFunc(mux, pat.Get("/users/transactions.json"), getTransactions)
+	apm.HandleFunc(mux, pat.Get("/users/:user_id.json"), getUserItems)
+	apm.HandleFunc(mux, pat.Get("/items/:item_id.json"), getItem)
+	apm.HandleFunc(mux, pat.Post("/items/edit"), postItemEdit)
+	apm.HandleFunc(mux, pat.Post("/buy"), postBuy)
+	apm.HandleFunc(mux, pat.Post("/sell"), postSell)
+	apm.HandleFunc(mux, pat.Post("/ship"), postShip)
+	apm.HandleFunc(mux, pat.Post("/ship_done"), postShipDone)
+	apm.HandleFunc(mux, pat.Post("/complete"), postComplete)
+	apm.HandleFunc(mux, pat.Get("/transactions/:transaction_evidence_id.png"), getQRCode)
+	apm.HandleFunc(mux, pat.Post("/bump"), postBump)
+	apm.HandleFunc(mux, pat.Get("/settings"), getSettings)
+	apm.HandleFunc(mux, pat.Post("/login"), postLogin)
+	apm.HandleFunc(mux, pat.Post("/register"), postRegister)
+	apm.HandleFunc(mux, pat.Get("/reports.json"), getReports)
 	// Frontend
-	mux.HandleFunc(pat.Get("/"), getIndex)
-	mux.HandleFunc(pat.Get("/login"), getIndex)
-	mux.HandleFunc(pat.Get("/register"), getIndex)
-	mux.HandleFunc(pat.Get("/timeline"), getIndex)
-	mux.HandleFunc(pat.Get("/categories/:category_id/items"), getIndex)
-	mux.HandleFunc(pat.Get("/sell"), getIndex)
-	mux.HandleFunc(pat.Get("/items/:item_id"), getIndex)
-	mux.HandleFunc(pat.Get("/items/:item_id/edit"), getIndex)
-	mux.HandleFunc(pat.Get("/items/:item_id/buy"), getIndex)
-	mux.HandleFunc(pat.Get("/buy/complete"), getIndex)
-	mux.HandleFunc(pat.Get("/transactions/:transaction_id"), getIndex)
-	mux.HandleFunc(pat.Get("/users/:user_id"), getIndex)
-	mux.HandleFunc(pat.Get("/users/setting"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/login"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/register"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/timeline"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/categories/:category_id/items"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/sell"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/items/:item_id"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/items/:item_id/edit"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/items/:item_id/buy"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/buy/complete"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/transactions/:transaction_id"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/users/:user_id"), getIndex)
+	apm.HandleFunc(mux, pat.Get("/users/setting"), getIndex)
+
 	// pprof
 	mux.Handle(pat.Get("/debug/pprof/*"), http.DefaultServeMux)
 
@@ -430,8 +440,13 @@ func getUserInstance(q sqlx.Queryer, userID int64) (user User, err error) {
 	}
 	userMux.RUnlock()
 
+	tx := apm.StartTransaction("getUserInstance")
+	defer tx.End()
+
+	s := apm.StartDatastoreSegment(tx, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `id` = ?")
 	user = User{}
 	err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
+	s.End()
 	if err != nil {
 		return user, err
 	}
@@ -494,7 +509,11 @@ func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err err
 	var ok bool
 	category, ok = categoryMap[categoryID]
 	if !ok {
+		tx := apm.StartTransaction("getCategoryByID")
+		defer tx.End()
+		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "categories", "SELECT * FROM `categories` WHERE `id` = ?")
 		err = sqlx.Get(q, &category, "SELECT * FROM `categories` WHERE `id` = ?", categoryID)
+		s.End()
 		if err != nil {
 			return category, err
 		}
@@ -513,7 +532,11 @@ func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err err
 
 func getConfigByName(name string) (string, error) {
 	config := Config{}
+	tx := apm.StartTransaction("getConfigByName")
+	defer tx.End()
+	s := apm.StartDatastoreSegment(tx, apm.DBSelect, "configs", "SELECT * FROM `configs` WHERE `name` = ?")
 	err := dbx.Get(&config, "SELECT * FROM `configs` WHERE `name` = ?", name)
+	s.End()
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -562,16 +585,26 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx := apm.StartTransaction("postInitialize")
+	defer tx.End()
+	s := apm.StartDatastoreSegment(tx, apm.DBInsert, "configs",
+		"INSERT INTO `configs` (`name`, `val`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `val` = VALUES(`val`)",
+	)
 	_, err = dbx.Exec(
 		"INSERT INTO `configs` (`name`, `val`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `val` = VALUES(`val`)",
 		"payment_service_url",
 		ri.PaymentServiceURL,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
 	}
+
+	s = apm.StartDatastoreSegment(tx, apm.DBInsert, "configs",
+		"INSERT INTO `configs` (`name`, `val`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `val` = VALUES(`val`)",
+	)
 	_, err = dbx.Exec(
 		"INSERT INTO `configs` (`name`, `val`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `val` = VALUES(`val`)",
 		"shipment_service_url",
@@ -617,9 +650,15 @@ func getNewItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	tx := apm.StartTransaction("getNewItems")
+	defer tx.End()
+
 	items := []Item{}
 	if itemID > 0 && createdAt > 0 {
 		// paging
+		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE `status` IN (?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		err := dbx.Select(&items,
 			"SELECT * FROM `items` WHERE `status` IN (?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			ItemStatusOnSale,
@@ -629,6 +668,7 @@ func getNewItems(w http.ResponseWriter, r *http.Request) {
 			itemID,
 			ItemsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -636,12 +676,16 @@ func getNewItems(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 1st page
+		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE `status` IN (?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		err := dbx.Select(&items,
 			"SELECT * FROM `items` WHERE `status` IN (?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			ItemStatusOnSale,
 			ItemStatusSoldOut,
 			ItemsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -704,8 +748,13 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx := apm.StartTransaction("getNewCategoryItems")
+	defer tx.End()
+
 	var categoryIDs []int
+	s := apm.StartDatastoreSegment(tx, apm.DBSelect, "categories", "SELECT id FROM `categories` WHERE parent_id=?")
 	err = dbx.Select(&categoryIDs, "SELECT id FROM `categories` WHERE parent_id=?", rootCategory.ID)
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -737,6 +786,9 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 	var inArgs []interface{}
 	if itemID > 0 && createdAt > 0 {
 		// paging
+		s = apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE `status` IN (?,?) AND category_id IN (?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		inQuery, inArgs, err = sqlx.In(
 			"SELECT * FROM `items` WHERE `status` IN (?,?) AND category_id IN (?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			ItemStatusOnSale,
@@ -747,6 +799,7 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 			itemID,
 			ItemsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -754,6 +807,9 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 1st page
+		s = apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE `status` IN (?,?) AND category_id IN (?) ORDER BY created_at DESC, id DESC LIMIT ?",
+		)
 		inQuery, inArgs, err = sqlx.In(
 			"SELECT * FROM `items` WHERE `status` IN (?,?) AND category_id IN (?) ORDER BY created_at DESC, id DESC LIMIT ?",
 			ItemStatusOnSale,
@@ -761,6 +817,7 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 			categoryIDs,
 			ItemsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -856,9 +913,15 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	tx := apm.StartTransaction("getUserItems")
+	defer tx.End()
+
 	items := []Item{}
 	if itemID > 0 && createdAt > 0 {
 		// paging
+		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE `seller_id` = ? AND `status` IN (?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		err := dbx.Select(&items,
 			"SELECT * FROM `items` WHERE `seller_id` = ? AND `status` IN (?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			userSimple.ID,
@@ -870,6 +933,7 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 			itemID,
 			ItemsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -877,6 +941,9 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 1st page
+		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE `seller_id` = ? AND `status` IN (?,?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		err := dbx.Select(&items,
 			"SELECT * FROM `items` WHERE `seller_id` = ? AND `status` IN (?,?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			userSimple.ID,
@@ -885,6 +952,7 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 			ItemStatusSoldOut,
 			ItemsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -959,10 +1027,16 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	t := apm.StartTransaction("getTransactions")
+	defer t.End()
+
 	tx := dbx.MustBegin()
 	items := []Item{}
 	if itemID > 0 && createdAt > 0 {
 		// paging
+		s := apm.StartDatastoreSegment(t, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		err := tx.Select(&items,
 			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			user.ID,
@@ -977,6 +1051,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			itemID,
 			TransactionsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -985,6 +1060,9 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 1st page
+		s := apm.StartDatastoreSegment(t, apm.DBSelect, "items",
+			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+		)
 		err := tx.Select(&items,
 			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			user.ID,
@@ -996,6 +1074,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			ItemStatusStop,
 			TransactionsPerPage+1,
 		)
+		s.End()
 		if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -1050,7 +1129,11 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		transactionEvidence := TransactionEvidence{}
+		s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences",
+			"SELECT * FROM `transaction_evidences` WHERE `item_id` = ?",
+		)
 		err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", item.ID)
+		s.End()
 		if err != nil && err != sql.ErrNoRows {
 			// It's able to ignore ErrNoRows
 			log.Print(err)
@@ -1061,7 +1144,11 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 
 		if transactionEvidence.ID > 0 {
 			shipping := Shipping{}
+			s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences",
+				"SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?",
+			)
 			err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
+			s.End()
 			if err == sql.ErrNoRows {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
 				tx.Rollback()
@@ -1116,18 +1203,23 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("getTransactions")
+	defer t.End()
+
 	user, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
 		return
 	}
 
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ?")
 	item := Item{}
 	err = dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ?", itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		return
 	}
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -1175,7 +1267,9 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		itemDetail.Buyer = &buyer
 
 		transactionEvidence := TransactionEvidence{}
+		s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?")
 		err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", item.ID)
+		s.End()
 		if err != nil && err != sql.ErrNoRows {
 			// It's able to ignore ErrNoRows
 			log.Print(err)
@@ -1185,7 +1279,9 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 
 		if transactionEvidence.ID > 0 {
 			shipping := Shipping{}
+			s := apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?")
 			err = dbx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
+			s.End()
 			if err == sql.ErrNoRows {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
 				return
@@ -1229,6 +1325,9 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postItemEdit")
+	defer t.End()
+
 	seller, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -1236,7 +1335,9 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetItem := Item{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ?")
 	err = dbx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		return
@@ -1254,7 +1355,9 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx := dbx.MustBegin()
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1269,11 +1372,13 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "items", "UPDATE `items` SET `price` = ?, `updated_at` = ? WHERE `id` = ?")
 	_, err = tx.Exec("UPDATE `items` SET `price` = ?, `updated_at` = ? WHERE `id` = ?",
 		price,
 		time.Now(),
 		itemID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1309,6 +1414,9 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("getQRCode")
+	defer t.End()
+
 	seller, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -1316,7 +1424,9 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transactionEvidence := TransactionEvidence{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `id` = ?")
 	err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `id` = ?", transactionEvidenceID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
 		return
@@ -1333,7 +1443,9 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shipping := Shipping{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?")
 	err = dbx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "shippings not found")
 		return
@@ -1372,6 +1484,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postBuy")
+	defer t.End()
+
 	buyer, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -1381,7 +1496,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	tx := dbx.MustBegin()
 
 	targetItem := Item{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", rb.ItemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		tx.Rollback()
@@ -1408,7 +1525,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	seller := User{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&seller, "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE", targetItem.SellerID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "seller not found")
 		tx.Rollback()
@@ -1431,6 +1550,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBInsert, "transaction_evidences", "INSERT INTO `transaction_evidences` (`seller_id`, `buyer_id`, `status`, `item_id`, `item_name`, `item_price`, `item_description`,`item_category_id`,`item_root_category_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	result, err := tx.Exec("INSERT INTO `transaction_evidences` (`seller_id`, `buyer_id`, `status`, `item_id`, `item_name`, `item_price`, `item_description`,`item_category_id`,`item_root_category_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		targetItem.SellerID,
 		buyer.ID,
@@ -1442,6 +1562,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		category.ID,
 		category.ParentID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1459,12 +1580,14 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "items", "UPDATE `items` SET `buyer_id` = ?, `status` = ?, `updated_at` = ? WHERE `id` = ?")
 	_, err = tx.Exec("UPDATE `items` SET `buyer_id` = ?, `status` = ?, `updated_at` = ? WHERE `id` = ?",
 		buyer.ID,
 		ItemStatusTrading,
 		time.Now(),
 		targetItem.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1519,6 +1642,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "shippings", "INSERT INTO `shippings` (`transaction_evidence_id`, `status`, `item_name`, `item_id`, `reserve_id`, `reserve_time`, `to_address`, `to_name`, `from_address`, `from_name`, `img_binary`) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
 	_, err = tx.Exec("INSERT INTO `shippings` (`transaction_evidence_id`, `status`, `item_name`, `item_id`, `reserve_id`, `reserve_time`, `to_address`, `to_name`, `from_address`, `from_name`, `img_binary`) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
 		transactionEvidenceID,
 		ShippingsStatusInitial,
@@ -1532,6 +1656,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		seller.AccountName,
 		"",
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1564,6 +1689,9 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postShip")
+	defer t.End()
+
 	seller, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -1571,7 +1699,9 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transactionEvidence := TransactionEvidence{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?")
 	err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
 		return
@@ -1591,7 +1721,9 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 	tx := dbx.MustBegin()
 
 	item := Item{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		tx.Rollback()
@@ -1610,7 +1742,9 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE", transactionEvidence.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
 		tx.Rollback()
@@ -1630,7 +1764,9 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shipping := Shipping{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ? FOR UPDATE")
 	err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ? FOR UPDATE", transactionEvidence.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "shippings not found")
 		tx.Rollback()
@@ -1654,12 +1790,14 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "shippings", "UPDATE `shippings` SET `status` = ?, `img_binary` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?")
 	_, err = tx.Exec("UPDATE `shippings` SET `status` = ?, `img_binary` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?",
 		ShippingsStatusWaitPickup,
 		img,
 		time.Now(),
 		transactionEvidence.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1695,6 +1833,8 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postShipDone")
+	defer t.End()
 	seller, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -1702,7 +1842,9 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transactionEvidence := TransactionEvidence{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?")
 	err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidence not found")
 		return
@@ -1722,7 +1864,9 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 	tx := dbx.MustBegin()
 
 	item := Item{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "items not found")
 		tx.Rollback()
@@ -1741,7 +1885,9 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE", transactionEvidence.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
 		tx.Rollback()
@@ -1761,7 +1907,9 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shipping := Shipping{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ? FOR UPDATE")
 	err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ? FOR UPDATE", transactionEvidence.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "shippings not found")
 		tx.Rollback()
@@ -1791,11 +1939,13 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "shippings", "UPDATE `shippings` SET `status` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?")
 	_, err = tx.Exec("UPDATE `shippings` SET `status` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?",
 		ssr.Status,
 		time.Now(),
 		transactionEvidence.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1804,11 +1954,13 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "transaction_evidences", "UPDATE `transaction_evidences` SET `status` = ?, `updated_at` = ? WHERE `id` = ?")
 	_, err = tx.Exec("UPDATE `transaction_evidences` SET `status` = ?, `updated_at` = ? WHERE `id` = ?",
 		TransactionEvidenceStatusWaitDone,
 		time.Now(),
 		transactionEvidence.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1841,6 +1993,9 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postComplete")
+	defer t.End()
+
 	buyer, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -1848,7 +2003,9 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transactionEvidence := TransactionEvidence{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?")
 	err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidence not found")
 		return
@@ -1867,7 +2024,9 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 
 	tx := dbx.MustBegin()
 	item := Item{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "items not found")
 		tx.Rollback()
@@ -1886,7 +2045,9 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ? FOR UPDATE")
 	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ? FOR UPDATE", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
 		tx.Rollback()
@@ -1906,7 +2067,9 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shipping := Shipping{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ? FOR UPDATE")
 	err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ? FOR UPDATE", transactionEvidence.ID)
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -1931,11 +2094,13 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "shippings", "UPDATE `shippings` SET `status` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?")
 	_, err = tx.Exec("UPDATE `shippings` SET `status` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?",
 		ShippingsStatusDone,
 		time.Now(),
 		transactionEvidence.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1944,11 +2109,13 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "transaction_evidences", "UPDATE `transaction_evidences` SET `status` = ?, `updated_at` = ? WHERE `id` = ?")
 	_, err = tx.Exec("UPDATE `transaction_evidences` SET `status` = ?, `updated_at` = ? WHERE `id` = ?",
 		TransactionEvidenceStatusDone,
 		time.Now(),
 		transactionEvidence.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -1957,11 +2124,13 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "items", "UPDATE `items` SET `status` = ?, `updated_at` = ? WHERE `id` = ?")
 	_, err = tx.Exec("UPDATE `items` SET `status` = ?, `updated_at` = ? WHERE `id` = ?",
 		ItemStatusSoldOut,
 		time.Now(),
 		itemID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -2020,6 +2189,9 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postSell")
+	defer t.End()
+
 	category, err := getCategoryByID(dbx, categoryID)
 	if err != nil || category.ParentID == 0 {
 		log.Print(categoryID, category)
@@ -2062,7 +2234,9 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	tx := dbx.MustBegin()
 
 	seller := User{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&seller, "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE", user.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "user not found")
 		tx.Rollback()
@@ -2075,6 +2249,7 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBInsert, "items", "INSERT INTO `items` (`seller_id`, `status`, `name`, `price`, `description`,`image_name`,`category_id`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	result, err := tx.Exec("INSERT INTO `items` (`seller_id`, `status`, `name`, `price`, `description`,`image_name`,`category_id`) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		seller.ID,
 		ItemStatusOnSale,
@@ -2084,6 +2259,7 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		imgName,
 		category.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -2100,11 +2276,13 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "users", "UPDATE `users` SET `num_sell_items`=?, `last_bump`=? WHERE `id`=?")
 	_, err = tx.Exec("UPDATE `users` SET `num_sell_items`=?, `last_bump`=? WHERE `id`=?",
 		seller.NumSellItems+1,
 		now,
 		seller.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -2143,6 +2321,9 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postBump")
+	defer t.End()
+
 	user, errCode, errMsg := getUser(r)
 	if errMsg != "" {
 		outputErrorMsg(w, errCode, errMsg)
@@ -2152,7 +2333,9 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 	tx := dbx.MustBegin()
 
 	targetItem := Item{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		tx.Rollback()
@@ -2172,7 +2355,9 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 	}
 
 	seller := User{}
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&seller, "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE", user.ID)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "user not found")
 		tx.Rollback()
@@ -2193,21 +2378,25 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "items", "UPDATE `items` SET `created_at`=?, `updated_at`=? WHERE id=?")
 	_, err = tx.Exec("UPDATE `items` SET `created_at`=?, `updated_at`=? WHERE id=?",
 		now,
 		now,
 		targetItem.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
+	s = apm.StartDatastoreSegment(t, apm.DBUpdate, "users", "UPDATE `users` SET `last_bump`=? WHERE id=?")
 	_, err = tx.Exec("UPDATE `users` SET `last_bump`=? WHERE id=?",
 		now,
 		seller.ID,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -2216,7 +2405,9 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 
 	deleteUserMap(seller.ID)
 
+	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ?")
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -2248,14 +2439,19 @@ func getSettings(w http.ResponseWriter, r *http.Request) {
 
 	ress.PaymentServiceURL = getPaymentServiceURL()
 
+	t := apm.StartTransaction("getSettings")
+	defer t.End()
+
 	categories := []Category{}
 
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "categories", "SELECT * FROM `categories`")
 	err := dbx.Select(&categories, "SELECT * FROM `categories`")
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	s.End()
 	ress.Categories = categories
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
@@ -2279,8 +2475,13 @@ func postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postLogin")
+	defer t.End()
+
 	u := User{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `account_name` = ?")
 	err = dbx.Get(&u, "SELECT * FROM `users` WHERE `account_name` = ?", accountName)
+	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusUnauthorized, "アカウント名かパスワードが間違えています")
 		return
@@ -2345,11 +2546,16 @@ func postRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	t := apm.StartTransaction("postRegister")
+	defer t.End()
+
+	s := apm.StartDatastoreSegment(t, apm.DBInsert, "users", "INSERT INTO `users` (`account_name`, `hashed_password`, `address`) VALUES (?, ?, ?)")
 	result, err := dbx.Exec("INSERT INTO `users` (`account_name`, `hashed_password`, `address`) VALUES (?, ?, ?)",
 		accountName,
 		hashedPassword,
 		address,
 	)
+	s.End()
 	if err != nil {
 		log.Print(err)
 
@@ -2386,8 +2592,14 @@ func postRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func getReports(w http.ResponseWriter, r *http.Request) {
+
+	t := apm.StartTransaction("getReports")
+	defer t.End()
+
 	transactionEvidences := make([]TransactionEvidence, 0)
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `id` > 15007")
 	err := dbx.Select(&transactionEvidences, "SELECT * FROM `transaction_evidences` WHERE `id` > 15007")
+	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
