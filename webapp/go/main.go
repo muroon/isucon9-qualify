@@ -72,6 +72,8 @@ var (
 	userMap     map[int64]User
 	userMux     sync.RWMutex
 	configMap   map[string]Config
+	shippingMap map[int64]Shipping
+	shippingMux sync.RWMutex
 )
 
 type Config struct {
@@ -288,6 +290,8 @@ func init() {
 
 	categoryMap = make(map[int]Category)
 	userMap = make(map[int64]User)
+	configMap = make(map[string]Config, 2)
+	shippingMap = make(map[int64]Shipping)
 }
 
 func main() {
@@ -1141,12 +1145,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if transactionEvidence.ID > 0 {
-			shipping := Shipping{}
-			s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences",
-				"SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?",
-			)
-			err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
-			s.End()
+			shipping, err := getShippingByTransactionEvidenceID(transactionEvidence.ID)
 			if err == sql.ErrNoRows {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
 				tx.Rollback()
@@ -1276,10 +1275,7 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if transactionEvidence.ID > 0 {
-			shipping := Shipping{}
-			s := apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?")
-			err = dbx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
-			s.End()
+			shipping, err := getShippingByTransactionEvidenceID(transactionEvidence.ID)
 			if err == sql.ErrNoRows {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
 				return
@@ -1440,10 +1436,7 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shipping := Shipping{}
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "shippings", "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?")
-	err = dbx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
-	s.End()
+	shipping, err := getShippingByTransactionEvidenceID(transactionEvidence.ID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "shippings not found")
 		return
@@ -1665,6 +1658,26 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 
 	tx.Commit()
 
+	now := time.Now()
+	shipping := Shipping{
+		transactionEvidenceID,
+		ShippingsStatusInitial,
+		targetItem.Name,
+		targetItem.ID,
+		scr.ReserveID,
+		scr.ReserveTime,
+		buyer.Address,
+		buyer.AccountName,
+		seller.Address,
+		seller.AccountName,
+		[]byte{},
+		now,
+		now,
+	}
+	shippingMux.Lock()
+	shippingMap[transactionEvidenceID] = shipping
+	shippingMux.Unlock()
+
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resBuy{TransactionEvidenceID: transactionEvidenceID})
 }
@@ -1805,6 +1818,8 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+
+	removeShippingMapKey(transactionEvidence.ID)
 
 	rps := resPostShip{
 		Path:      fmt.Sprintf("/transactions/%d.png", transactionEvidence.ID),
@@ -1968,6 +1983,8 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+
+	removeShippingMapKey(transactionEvidence.ID)
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resBuy{TransactionEvidenceID: transactionEvidence.ID})
@@ -2138,6 +2155,8 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+
+	removeShippingMapKey(transactionEvidence.ID)
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resBuy{TransactionEvidenceID: transactionEvidence.ID})
@@ -2610,4 +2629,37 @@ func outputErrorMsg(w http.ResponseWriter, status int, msg string) {
 
 func getImageURL(imageName string) string {
 	return fmt.Sprintf("/upload/%s", imageName)
+}
+
+func getShippingByTransactionEvidenceID(transactionEvidenceID int64) (Shipping, error) {
+	shippingMux.RLock()
+	if shipping, ok := shippingMap[transactionEvidenceID]; ok {
+		shippingMux.RUnlock()
+		return shipping, nil
+	}
+	shippingMux.RUnlock()
+
+	t := apm.StartTransaction("getShippingByTransactionEvidenceID")
+	defer t.End()
+
+	shipping := Shipping{}
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences",
+		"SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?",
+	)
+	err := dbx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidenceID)
+	s.End()
+
+	if err == nil {
+		shippingMux.Lock()
+		shippingMap[transactionEvidenceID] = shipping
+		shippingMux.Unlock()
+	}
+
+	return shipping, err
+}
+
+func removeShippingMapKey(transactionEvidenceID int64) {
+	shippingMux.Lock()
+	delete(shippingMap, transactionEvidenceID)
+	shippingMux.Unlock()
 }
