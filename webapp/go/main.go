@@ -68,6 +68,7 @@ var (
 	dbx         *sqlx.DB
 	store       sessions.Store
 	categoryMap map[int]Category
+	categories  []Category
 	userMap     map[int64]User
 	userMux     sync.RWMutex
 )
@@ -493,7 +494,6 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 
 // initAllCategories 全キャッシュ
 func initAllCategories(q sqlx.Queryer) error {
-	categories := []Category{}
 	err := sqlx.Select(q, &categories, "SELECT * FROM categories")
 	if err != nil {
 		return err
@@ -2442,16 +2442,6 @@ func getSettings(w http.ResponseWriter, r *http.Request) {
 	t := apm.StartTransaction("getSettings")
 	defer t.End()
 
-	categories := make([]Category, 0, len(categoryMap))
-
-	s := apm.StartDatastoreSegment(t, apm.DBSelect, "categories", "SELECT * FROM `categories`")
-	err := dbx.Select(&categories, "SELECT * FROM `categories`")
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	s.End()
 	ress.Categories = categories
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
