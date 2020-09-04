@@ -653,7 +653,7 @@ func getNewItems(w http.ResponseWriter, r *http.Request) {
 	tx := apm.StartTransaction("getNewItems")
 	defer tx.End()
 
-	items := []Item{}
+	items := make([]Item, 0, ItemsPerPage+1)
 	if itemID > 0 && createdAt > 0 {
 		// paging
 		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
@@ -693,7 +693,7 @@ func getNewItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	itemSimples := []ItemSimple{}
+	itemSimples := make([]ItemSimple, 0, len(items))
 	for _, item := range items {
 		seller, err := getUserSimpleByID(dbx, item.SellerID)
 		if err != nil {
@@ -825,7 +825,7 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	items := []Item{}
+	items := make([]Item, 0, ItemsPerPage+1)
 	err = dbx.Select(&items, inQuery, inArgs...)
 
 	if err != nil {
@@ -834,7 +834,7 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	itemSimples := []ItemSimple{}
+	itemSimples := make([]ItemSimple, 0, len(items))
 	for _, item := range items {
 		seller, err := getUserSimpleByID(dbx, item.SellerID)
 		if err != nil {
@@ -916,7 +916,7 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 	tx := apm.StartTransaction("getUserItems")
 	defer tx.End()
 
-	items := []Item{}
+	items := make([]Item, 0, ItemsPerPage)
 	if itemID > 0 && createdAt > 0 {
 		// paging
 		s := apm.StartDatastoreSegment(tx, apm.DBSelect, "items",
@@ -960,7 +960,7 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	itemSimples := []ItemSimple{}
+	itemSimples := make([]ItemSimple, 0, len(items))
 	for _, item := range items {
 		category, err := getCategoryByID(dbx, item.CategoryID)
 		if err != nil {
@@ -1031,7 +1031,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	defer t.End()
 
 	tx := dbx.MustBegin()
-	items := []Item{}
+	items := make([]Item, 0, TransactionsPerPage+1)
 	if itemID > 0 && createdAt > 0 {
 		// paging
 		s := apm.StartDatastoreSegment(t, apm.DBSelect, "items",
@@ -1083,7 +1083,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	itemDetails := []ItemDetail{}
+	itemDetails := make([]ItemDetail, 0, len(items))
 	for _, item := range items {
 		seller, err := getUserSimpleByID(tx, item.SellerID)
 		if err != nil {
@@ -2442,7 +2442,7 @@ func getSettings(w http.ResponseWriter, r *http.Request) {
 	t := apm.StartTransaction("getSettings")
 	defer t.End()
 
-	categories := []Category{}
+	categories := make([]Category, 0, len(categoryMap))
 
 	s := apm.StartDatastoreSegment(t, apm.DBSelect, "categories", "SELECT * FROM `categories`")
 	err := dbx.Select(&categories, "SELECT * FROM `categories`")
