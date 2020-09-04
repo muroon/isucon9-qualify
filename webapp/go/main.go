@@ -71,6 +71,7 @@ var (
 	categories  []Category
 	userMap     map[int64]User
 	userMux     sync.RWMutex
+	configMap   map[string]Config
 )
 
 type Config struct {
@@ -338,14 +339,6 @@ func main() {
 	}
 	defer dbx.Close()
 
-	if err = initAllCategories(dbx); err != nil {
-		log.Fatalf("failed to init all categories: %s.", err.Error())
-	}
-
-	if err = initAllUsers(dbx); err != nil {
-		log.Fatalf("failed to init all users: %s.", err.Error())
-	}
-
 	mux := goji.NewMux()
 
 	// API
@@ -531,20 +524,8 @@ func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err err
 }
 
 func getConfigByName(name string) (string, error) {
-	config := Config{}
-	tx := apm.StartTransaction("getConfigByName")
-	defer tx.End()
-	s := apm.StartDatastoreSegment(tx, apm.DBSelect, "configs", "SELECT * FROM `configs` WHERE `name` = ?")
-	err := dbx.Get(&config, "SELECT * FROM `configs` WHERE `name` = ?", name)
-	s.End()
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		log.Print(err)
-		return "", err
-	}
-	return config.Val, err
+	config := configMap[name]
+	return config.Val, nil
 }
 
 func getPaymentServiceURL() string {
@@ -585,6 +566,18 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err = initAllCategories(dbx); err != nil {
+		log.Fatalf("failed to init all categories: %s.", err.Error())
+		outputErrorMsg(w, http.StatusInternalServerError, "exec init.sh error")
+		return
+	}
+
+	if err = initAllUsers(dbx); err != nil {
+		log.Fatalf("failed to init all users: %s.", err.Error())
+		outputErrorMsg(w, http.StatusInternalServerError, "exec init.sh error")
+		return
+	}
+
 	tx := apm.StartTransaction("postInitialize")
 	defer tx.End()
 	s := apm.StartDatastoreSegment(tx, apm.DBInsert, "configs",
@@ -614,6 +607,11 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
+	}
+
+	configMap = map[string]Config{
+		"payment_service_url":  Config{Name: "payment_service_url", Val: ri.PaymentServiceURL},
+		"shipment_service_url": Config{Name: "shipment_service_url", Val: ri.ShipmentServiceURL},
 	}
 
 	res := resInitialize{
