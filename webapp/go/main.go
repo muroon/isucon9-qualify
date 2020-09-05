@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -1085,7 +1086,11 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	itemIDs := make([]interface{}, 0, len(items))
+	forItemIDs := make([]string, 0, len(items))
+
 	itemDetails := make([]ItemDetail, 0, len(items))
+	itemDetailPointers := make([]*ItemDetail, 0, len(items))
 	for _, item := range items {
 		seller, err := getUserSimpleByID(tx, item.SellerID)
 		if err != nil {
@@ -1100,7 +1105,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		itemDetail := ItemDetail{
+		itemDetail := &ItemDetail{
 			ID:       item.ID,
 			SellerID: item.SellerID,
 			Seller:   &seller,
@@ -1130,50 +1135,74 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			itemDetail.Buyer = &buyer
 		}
 
-		transactionEvidence := TransactionEvidence{}
-		s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences",
-			"SELECT * FROM `transaction_evidences` WHERE `item_id` = ?",
-		)
-		err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", item.ID)
-		s.End()
-		if err != nil && err != sql.ErrNoRows {
-			// It's able to ignore ErrNoRows
-			log.Print(err)
-			outputErrorMsg(w, http.StatusInternalServerError, "db error")
-			tx.Rollback()
-			return
-		}
+		itemIDs = append(itemIDs, itemDetail.ID)
+		forItemIDs = append(forItemIDs, "?")
 
-		if transactionEvidence.ID > 0 {
-			shipping, err := getShippingByTransactionEvidenceID(transactionEvidence.ID)
-			if err == sql.ErrNoRows {
-				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
-				tx.Rollback()
-				return
-			}
-			if err != nil {
-				log.Print(err)
-				outputErrorMsg(w, http.StatusInternalServerError, "db error")
-				tx.Rollback()
-				return
-			}
-			ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
-				ReserveID: shipping.ReserveID,
+		itemDetailPointers = append(itemDetailPointers, itemDetail)
+	}
+
+	q := "SELECT transaction_evidences.*, shippings.* FROM transaction_evidences INNER JOIN shippings ON (transaction_evidences.id = shippings.transaction_evidence_id AND transaction_evidences.item_id = shippings.item_id) WHERE transaction_evidences.item_id IN (%s)"
+	q = fmt.Sprintf(q, strings.Join(forItemIDs, ","))
+	var tranShips []struct {
+		TransactionEvidence
+		Shipping
+	}
+	err = dbx.Select(&tranShips, q, itemIDs...)
+	if err != nil && err != sql.ErrNoRows {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		tx.Rollback()
+		return
+	}
+
+	transactionEvidenceMap := make(map[int64]TransactionEvidence, len(tranShips))
+
+	shipmentServiceURL := getShipmentServiceURL()
+	e := make(chan error, 1)
+	statusChan := make(chan map[int64]string, 1)
+	go func() {
+		for _, tranShip := range tranShips {
+			itemID := tranShip.Shipping.ItemID
+			tranShip.TransactionEvidence.ItemID = itemID
+			transactionEvidenceMap[itemID] = tranShip.TransactionEvidence
+
+			ssr, err := APIShipmentStatus(shipmentServiceURL, &APIShipmentStatusReq{
+				ReserveID: tranShip.Shipping.ReserveID,
 			})
 			if err != nil {
 				log.Print(err)
-				outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
 				tx.Rollback()
+				e <- err
 				return
 			}
+			statusChan <- map[int64]string{
+				itemID: ssr.Status,
+			}
+		}
+	}()
 
+	shippingStatusMap := make(map[int64]string, len(tranShips))
+	for i := 0; i < len(tranShips); i++ {
+		select {
+		case <-e:
+			outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
+			return
+		case s := <-statusChan:
+			for itemID, status := range s {
+				shippingStatusMap[itemID] = status
+			}
+		}
+	}
+
+	for _, itemDetail := range itemDetailPointers {
+		if transactionEvidence, ok := transactionEvidenceMap[itemDetail.ID]; ok {
 			itemDetail.TransactionEvidenceID = transactionEvidence.ID
 			itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
-			itemDetail.ShippingStatus = ssr.Status
+			itemDetail.ShippingStatus = shippingStatusMap[itemDetail.ID]
 		}
-
-		itemDetails = append(itemDetails, itemDetail)
+		itemDetails = append(itemDetails, *itemDetail)
 	}
+
 	tx.Commit()
 
 	hasNext := false
