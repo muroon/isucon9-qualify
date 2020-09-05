@@ -1085,7 +1085,11 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	shippingStatusTargets := make([]*ItemDetail, 0, len(items))
+	shippingReserveIDMap := make(map[int64]string, len(items))
+
 	itemDetails := make([]ItemDetail, 0, len(items))
+	itemDetailPointers := make([]*ItemDetail, 0, len(items))
 	for _, item := range items {
 		seller, err := getUserSimpleByID(tx, item.SellerID)
 		if err != nil {
@@ -1100,7 +1104,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		itemDetail := ItemDetail{
+		itemDetail := &ItemDetail{
 			ID:       item.ID,
 			SellerID: item.SellerID,
 			Seller:   &seller,
@@ -1145,7 +1149,12 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if transactionEvidence.ID > 0 {
-			shipping, err := getShippingByTransactionEvidenceID(transactionEvidence.ID)
+			shipping := Shipping{}
+			s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences",
+				"SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?",
+			)
+			err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
+			s.End()
 			if err == sql.ErrNoRows {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
 				tx.Rollback()
@@ -1157,23 +1166,58 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 				tx.Rollback()
 				return
 			}
-			ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
-				ReserveID: shipping.ReserveID,
-			})
-			if err != nil {
-				log.Print(err)
-				outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
-				tx.Rollback()
-				return
-			}
 
 			itemDetail.TransactionEvidenceID = transactionEvidence.ID
 			itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
-			itemDetail.ShippingStatus = ssr.Status
+
+			shippingStatusTargets = append(shippingStatusTargets, itemDetail)
+			shippingReserveIDMap[itemDetail.ID] = shipping.ReserveID
+		} else {
 		}
 
-		itemDetails = append(itemDetails, itemDetail)
+		itemDetailPointers = append(itemDetailPointers, itemDetail)
 	}
+
+	shipmentServiceURL := getShipmentServiceURL()
+	e := make(chan error, 1)
+	statusChan := make(chan map[int64]string, 1)
+	go func() {
+		for _, itemDetail := range shippingStatusTargets {
+			ssr, err := APIShipmentStatus(shipmentServiceURL, &APIShipmentStatusReq{
+				ReserveID: shippingReserveIDMap[itemDetail.ID],
+			})
+			if err != nil {
+				log.Print(err)
+				tx.Rollback()
+				e <- err
+				return
+			}
+			statusChan <- map[int64]string{
+				itemDetail.ID: ssr.Status,
+			}
+		}
+	}()
+
+	shippingStatusMap := make(map[int64]string, len(shippingStatusTargets))
+	for i := 0; i < len(shippingStatusTargets); i++ {
+		select {
+		case <-e:
+			outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
+			return
+		case s := <-statusChan:
+			for itemID, status := range s {
+				shippingStatusMap[itemID] = status
+			}
+		}
+	}
+
+	for _, itemDetail := range itemDetailPointers {
+		if itemDetail.TransactionEvidenceID > 0 {
+			itemDetail.ShippingStatus = shippingStatusMap[itemDetail.ID]
+		}
+		itemDetails = append(itemDetails, *itemDetail)
+	}
+
 	tx.Commit()
 
 	hasNext := false
