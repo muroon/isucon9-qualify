@@ -1200,7 +1200,7 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t := apm.StartTransaction("getTransactions")
+	t := apm.StartTransaction("getItem")
 	defer t.End()
 
 	user, errCode, errMsg := getUser(r)
