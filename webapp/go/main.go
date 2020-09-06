@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/isucon/isucon9-qualify/webapp/go/apm"
 	"html/template"
@@ -2329,31 +2330,37 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	img, err := ioutil.ReadAll(f)
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "image error")
-		return
-	}
+	var imgName string
+	var done bool
+	var readErr error
+	var writeErr error
+	go func() {
+		img, err := ioutil.ReadAll(f)
+		if err != nil {
+			readErr = err
+			return
+		}
 
-	ext := filepath.Ext(header.Filename)
+		ext := filepath.Ext(header.Filename)
 
-	if !(ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif") {
-		outputErrorMsg(w, http.StatusBadRequest, "unsupported image format error")
-		return
-	}
+		if !(ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif") {
+			readErr = errors.New("\"unsupported image format error\"")
+			return
+		}
 
-	if ext == ".jpeg" {
-		ext = ".jpg"
-	}
+		if ext == ".jpeg" {
+			ext = ".jpg"
+		}
 
-	imgName := fmt.Sprintf("%s%s", secureRandomStr(16), ext)
-	err = ioutil.WriteFile(fmt.Sprintf("../public/upload/%s", imgName), img, 0644)
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "Saving image failed")
-		return
-	}
+		imgName = fmt.Sprintf("%s%s", secureRandomStr(16), ext)
+
+		writeErr = ioutil.WriteFile(fmt.Sprintf("../public/upload/%s", imgName), img, 0644)
+		if writeErr != nil {
+			log.Print(writeErr)
+			return
+		}
+		done = true
+	}()
 
 	tx := dbx.MustBegin()
 
@@ -2371,6 +2378,16 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		tx.Rollback()
 		return
+	}
+
+	for {
+		if readErr != nil {
+			outputErrorMsg(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if imgName != "" {
+			break
+		}
 	}
 
 	s = apm.StartDatastoreSegment(t, apm.DBInsert, "items", "INSERT INTO `items` (`seller_id`, `status`, `name`, `price`, `description`,`image_name`,`category_id`) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -2409,10 +2426,21 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	s.End()
 	if err != nil {
 		log.Print(err)
-
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
 	}
+
+	for {
+		if done {
+			break
+		}
+
+		if writeErr != nil {
+			outputErrorMsg(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
 	tx.Commit()
 
 	deleteUserMap(seller.ID)
