@@ -1847,24 +1847,6 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transactionEvidence := TransactionEvidence{}
-	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?")
-	err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", itemID)
-	s.End()
-	if err == sql.ErrNoRows {
-		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
-		return
-	}
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-
-		return
-	}
-
-	if transactionEvidence.SellerID != seller.ID {
-		outputErrorMsg(w, http.StatusForbidden, "権限がありません")
-		return
-	}
 
 	tx := dbx.MustBegin()
 
@@ -1887,8 +1869,8 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE")
-	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE", transactionEvidence.ID)
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ? FOR UPDATE")
+	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ? FOR UPDATE", itemID)
 	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
@@ -1898,6 +1880,11 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		tx.Rollback()
+		return
+	}
+	if transactionEvidence.SellerID != seller.ID {
+		outputErrorMsg(w, http.StatusForbidden, "権限がありません")
 		tx.Rollback()
 		return
 	}
@@ -1989,24 +1976,6 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transactionEvidence := TransactionEvidence{}
-	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?")
-	err = dbx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", itemID)
-	s.End()
-	if err == sql.ErrNoRows {
-		outputErrorMsg(w, http.StatusNotFound, "transaction_evidence not found")
-		return
-	}
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-
-		return
-	}
-
-	if transactionEvidence.SellerID != seller.ID {
-		outputErrorMsg(w, http.StatusForbidden, "権限がありません")
-		return
-	}
 
 	tx := dbx.MustBegin()
 
@@ -2029,8 +1998,8 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE")
-	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `id` = ? FOR UPDATE", transactionEvidence.ID)
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "transaction_evidences", "SELECT * FROM `transaction_evidences` WHERE `item_id` = ? FOR UPDATE")
+	err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ? FOR UPDATE", itemID)
 	s.End()
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "transaction_evidences not found")
@@ -2040,6 +2009,11 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		tx.Rollback()
+		return
+	}
+	if transactionEvidence.SellerID != seller.ID {
+		outputErrorMsg(w, http.StatusForbidden, "権限がありません")
 		tx.Rollback()
 		return
 	}
