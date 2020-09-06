@@ -76,6 +76,8 @@ var (
 	shippingMux sync.RWMutex
 	itemMap     map[int64]Item
 	itemMux     sync.RWMutex
+	passMap     map[int64]string
+	passMux     sync.RWMutex
 )
 
 type Config struct {
@@ -295,6 +297,7 @@ func init() {
 	configMap = make(map[string]Config, 2)
 	shippingMap = make(map[int64]Shipping)
 	itemMap = make(map[int64]Item)
+	passMap = make(map[int64]string)
 }
 
 func main() {
@@ -590,6 +593,8 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		outputErrorMsg(w, http.StatusInternalServerError, "exec init.sh error")
 		return
 	}
+
+	passMap = make(map[int64]string, len(userMap))
 
 	tx := apm.StartTransaction("postInitialize")
 	defer tx.End()
@@ -2547,16 +2552,28 @@ func postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = bcrypt.CompareHashAndPassword(u.HashedPassword, []byte(password))
-	if err == bcrypt.ErrMismatchedHashAndPassword {
-		outputErrorMsg(w, http.StatusUnauthorized, "アカウント名かパスワードが間違えています")
-		return
-	}
-	if err != nil {
-		log.Print(err)
+	passMux.RLock()
+	cachedPass, ok := passMap[u.ID]
+	passMux.RUnlock()
+	if !ok || cachedPass != password {
+		fmt.Printf("uncached pass userID:%d\n", u.ID)
+		err = bcrypt.CompareHashAndPassword(u.HashedPassword, []byte(password))
+		if err == bcrypt.ErrMismatchedHashAndPassword {
+			outputErrorMsg(w, http.StatusUnauthorized, "アカウント名かパスワードが間違えています")
+			return
+		}
+		if err != nil {
+			log.Print(err)
 
-		outputErrorMsg(w, http.StatusInternalServerError, "crypt error")
-		return
+			outputErrorMsg(w, http.StatusInternalServerError, "crypt error")
+			return
+		}
+		passMux.Lock()
+		passMap[u.ID] = password
+		passMux.Unlock()
+		fmt.Printf("uncached -> cached pass userID:%d\n", u.ID)
+	} else {
+		fmt.Printf("cached pass userID:%d\n", u.ID)
 	}
 
 	session := getSession(r)
@@ -2640,6 +2657,10 @@ func postRegister(w http.ResponseWriter, r *http.Request) {
 		outputErrorMsg(w, http.StatusInternalServerError, "session error")
 		return
 	}
+
+	passMux.Lock()
+	passMap[u.ID] = password
+	passMux.Unlock()
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(u)
