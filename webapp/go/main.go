@@ -1035,19 +1035,21 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	tx := dbx.MustBegin()
 	items := make([]Item, 0, TransactionsPerPage+1)
 	if itemID > 0 && createdAt > 0 {
+		query1 := "SELECT * FROM `items` WHERE `seller_id` = ? AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?))"
+		query2 := "SELECT * FROM `items` WHERE `buyer_id` = ? AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?))"
+		query := fmt.Sprintf("%s UNION %s ORDER BY `created_at` DESC, `id` DESC LIMIT ?", query1, query2)
+
 		// paging
 		s := apm.StartDatastoreSegment(t, apm.DBSelect, "items",
-			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+			query,
 		)
 		err := tx.Select(&items,
-			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+			query,
 			user.ID,
+			time.Unix(createdAt, 0),
+			time.Unix(createdAt, 0),
+			itemID,
 			user.ID,
-			ItemStatusOnSale,
-			ItemStatusTrading,
-			ItemStatusSoldOut,
-			ItemStatusCancel,
-			ItemStatusStop,
 			time.Unix(createdAt, 0),
 			time.Unix(createdAt, 0),
 			itemID,
@@ -1062,18 +1064,17 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// 1st page
+		query1 := "SELECT * FROM `items` WHERE `seller_id` = ? "
+		query2 := "SELECT * FROM `items` WHERE `buyer_id` = ? "
+		query := fmt.Sprintf("%s UNION %s ORDER BY `created_at` DESC, `id` DESC LIMIT ?", query1, query2)
+
 		s := apm.StartDatastoreSegment(t, apm.DBSelect, "items",
-			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+			query,
 		)
 		err := tx.Select(&items,
-			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
+			query,
 			user.ID,
 			user.ID,
-			ItemStatusOnSale,
-			ItemStatusTrading,
-			ItemStatusSoldOut,
-			ItemStatusCancel,
-			ItemStatusStop,
 			TransactionsPerPage+1,
 		)
 		s.End()
