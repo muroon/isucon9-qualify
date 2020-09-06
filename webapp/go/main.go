@@ -71,6 +71,8 @@ var (
 	categories  []Category
 	userMap     map[int64]User
 	userMux     sync.RWMutex
+	userNameMap map[string]User
+	userNameMux sync.RWMutex
 	configMap   map[string]Config
 	shippingMap map[int64]Shipping
 	shippingMux sync.RWMutex
@@ -294,6 +296,7 @@ func init() {
 
 	categoryMap = make(map[int]Category)
 	userMap = make(map[int64]User)
+	userNameMap = make(map[string]User)
 	configMap = make(map[string]Config, 2)
 	shippingMap = make(map[int64]Shipping)
 	itemMap = make(map[int64]Item)
@@ -459,13 +462,64 @@ func getUserInstance(q sqlx.Queryer, userID int64) (user User, err error) {
 	userMap[userID] = user
 	userMux.Unlock()
 
+	userNameMux.Lock()
+	userNameMap[user.AccountName] = user
+	userNameMux.Unlock()
+
+	return user, err
+}
+
+func getUserByName(q sqlx.Queryer, name string) (User, error) {
+	userNameMux.RLock()
+	if user, ok := userNameMap[name]; ok {
+		userNameMux.RUnlock()
+		return user, nil
+	}
+	userNameMux.Unlock()
+
+	t := apm.StartTransaction("getUserByName")
+	defer t.End()
+
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `account_name` = ?")
+	user := User{}
+	err := sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `account_name` = ?", name)
+	s.End()
+	if err != nil {
+		return user, err
+	}
+
+	if err == nil {
+		userNameMux.Lock()
+		userNameMap[user.AccountName] = user
+		userNameMux.Unlock()
+	}
+
 	return user, err
 }
 
 func deleteUserMap(userID int64) {
+	userMux.RLock()
+	var user User
+	var ok bool
+	if user, ok = userMap[userID]; !ok {
+		userMux.RUnlock()
+		return
+	}
+	userMux.RUnlock()
+
 	userMux.Lock()
 	delete(userMap, userID)
 	userMux.Unlock()
+
+	userNameMux.RLock()
+	if _, ok := userNameMap[user.AccountName]; ok {
+		userNameMux.RUnlock()
+		userNameMux.Lock()
+		delete(userNameMap, user.AccountName)
+		userNameMux.Unlock()
+		return
+	}
+	userNameMux.RUnlock()
 }
 
 func initAllUsers(q sqlx.Queryer) error {
@@ -476,10 +530,13 @@ func initAllUsers(q sqlx.Queryer) error {
 	}
 
 	userMux.Lock()
+	userNameMux.Lock()
 	for _, user := range users {
 		userMap[user.ID] = user
+		userNameMap[user.AccountName] = user
 	}
 	userMux.Unlock()
+	userNameMux.Unlock()
 
 	return nil
 }
@@ -2537,10 +2594,7 @@ func postLogin(w http.ResponseWriter, r *http.Request) {
 	t := apm.StartTransaction("postLogin")
 	defer t.End()
 
-	u := User{}
-	s := apm.StartDatastoreSegment(t, apm.DBSelect, "users", "SELECT * FROM `users` WHERE `account_name` = ?")
-	err = dbx.Get(&u, "SELECT * FROM `users` WHERE `account_name` = ?", accountName)
-	s.End()
+	u, err := getUserByName(dbx, accountName)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusUnauthorized, "アカウント名かパスワードが間違えています")
 		return
