@@ -74,6 +74,8 @@ var (
 	configMap   map[string]Config
 	shippingMap map[int64]Shipping
 	shippingMux sync.RWMutex
+	itemMap     map[int64]Item
+	itemMux     sync.RWMutex
 )
 
 type Config struct {
@@ -292,6 +294,7 @@ func init() {
 	userMap = make(map[int64]User)
 	configMap = make(map[string]Config, 2)
 	shippingMap = make(map[int64]Shipping)
+	itemMap = make(map[int64]Item)
 }
 
 func main() {
@@ -578,6 +581,12 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 
 	if err = initAllUsers(dbx); err != nil {
 		log.Fatalf("failed to init all users: %s.", err.Error())
+		outputErrorMsg(w, http.StatusInternalServerError, "exec init.sh error")
+		return
+	}
+
+	if err = initAllItems(dbx); err != nil {
+		log.Fatalf("failed to init all items: %s.", err.Error())
 		outputErrorMsg(w, http.StatusInternalServerError, "exec init.sh error")
 		return
 	}
@@ -1254,14 +1263,11 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ?")
-	item := Item{}
-	err = dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+	item, err := getItemByID(itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		return
 	}
-	s.End()
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
@@ -1373,10 +1379,7 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetItem := Item{}
-	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ?")
-	err = dbx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ?", itemID)
-	s.End()
+	targetItem, err := getItemByID(itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		return
@@ -1394,7 +1397,7 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx := dbx.MustBegin()
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
+	s := apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
 	s.End()
 	if err != nil {
@@ -1435,6 +1438,8 @@ func postItemEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+
+	setItem(targetItem)
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(&resItemEdit{
@@ -1703,6 +1708,8 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 
 	tx.Commit()
 
+	removeItemMapKey(targetItem.ID)
+
 	now := time.Now()
 	shipping := Shipping{
 		transactionEvidenceID,
@@ -1776,10 +1783,7 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 
 	tx := dbx.MustBegin()
 
-	item := Item{}
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
-	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
-	s.End()
+	item, err := getItemByID(itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
 		tx.Rollback()
@@ -1921,10 +1925,7 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 
 	tx := dbx.MustBegin()
 
-	item := Item{}
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
-	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
-	s.End()
+	item, err := getItemByID(itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "items not found")
 		tx.Rollback()
@@ -2083,10 +2084,7 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx := dbx.MustBegin()
-	item := Item{}
-	s = apm.StartDatastoreSegment(t, apm.DBSelect, "items", "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE")
-	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
-	s.End()
+	item, err := getItemByID(itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "items not found")
 		tx.Rollback()
@@ -2200,6 +2198,8 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+
+	removeItemMapKey(itemID)
 
 	removeShippingMapKey(transactionEvidence.ID)
 
@@ -2479,6 +2479,8 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 
 	tx.Commit()
 
+	setItem(targetItem)
+
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(&resItemEdit{
 		ItemID:        targetItem.ID,
@@ -2707,4 +2709,53 @@ func removeShippingMapKey(transactionEvidenceID int64) {
 	shippingMux.Lock()
 	delete(shippingMap, transactionEvidenceID)
 	shippingMux.Unlock()
+}
+
+func getItemByID(itemID int64) (Item, error) {
+	itemMux.RLock()
+	if item, ok := itemMap[itemID]; ok {
+		itemMux.RUnlock()
+		return item, nil
+	}
+	itemMux.RUnlock()
+
+	item := Item{}
+	err := dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+
+	if err == nil {
+		itemMux.Lock()
+		itemMap[item.ID] = item
+		itemMux.Unlock()
+	}
+
+	return item, err
+}
+
+func setItem(item Item) {
+	itemMux.Lock()
+	itemMap[item.ID] = item
+	itemMux.Unlock()
+}
+
+func removeItemMapKey(itemID int64) {
+	itemMux.Lock()
+	delete(itemMap, itemID)
+	itemMux.Unlock()
+}
+
+func initAllItems(q sqlx.Queryer) error {
+	items := []Item{}
+	err := sqlx.Select(q, &items, "SELECT * FROM items")
+	if err != nil {
+		return err
+	}
+
+	itemMap = make(map[int64]Item)
+	itemMux.Lock()
+	for _, item := range items {
+		itemMap[item.ID] = item
+	}
+	itemMux.Unlock()
+
+	return nil
 }
