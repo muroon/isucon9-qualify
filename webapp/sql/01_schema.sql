@@ -35,6 +35,7 @@ CREATE TABLE `items` (
 ALTER TABLE items ADD INDEX idx_buyer_id(buyer_id);
 ALTER TABLE items ADD INDEX idx_seller_id(seller_id);
 ALTER TABLE items ADD INDEX idx_created_at(created_at);
+ALTER TABLE items ADD INDEX idx_status(status);
 
 DROP TABLE IF EXISTS `transaction_evidences`;
 CREATE TABLE `transaction_evidences` (
