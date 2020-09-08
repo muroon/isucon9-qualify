@@ -6,6 +6,7 @@ require (
 	github.com/go-sql-driver/mysql v1.4.1
 	github.com/gorilla/sessions v1.2.0
 	github.com/jmoiron/sqlx v1.2.0
+	github.com/muroon/newrelic_apm v0.0.0-20200908044330-59c3ece25aa4
 	github.com/newrelic/go-agent v3.8.1+incompatible // indirect
 	github.com/newrelic/go-agent/v3 v3.8.1
 	goji.io v2.0.2+incompatible

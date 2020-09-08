@@ -1,10 +1,13 @@
 package apm
 
 import (
+	"context"
+	"errors"
+	"net/http"
+
 	"github.com/newrelic/go-agent/v3/newrelic"
 	goji "goji.io"
 	"goji.io/pat"
-	"net/http"
 )
 
 const (
@@ -14,7 +17,13 @@ const (
 	DBDelete string = "DELETE"
 )
 
-var app *newrelic.Application
+var (
+	app    *newrelic.Application
+	client = &http.Client{
+		Transport: newrelic.NewRoundTripper(nil),
+	}
+	DefaultClient = http.DefaultClient // TODO: 問題によってはかわる可能性あり
+)
 
 // Transaction (NoWeb)トランザクション用
 type Transaction struct {
@@ -39,20 +48,22 @@ func (d DatastoreSegment) End() {
 }
 
 // Setup APM設定
-func Setup(appName, license string) (err error) {
+func Setup(appName string, license string) (err error) {
 	if appName == "" || license == "" {
-		return
+		return errors.New("appName or Licence is empty")
 	}
 
 	app, err = newrelic.NewApplication(
 		newrelic.ConfigAppName(appName),
 		newrelic.ConfigLicense(license),
 		newrelic.ConfigDistributedTracerEnabled(true),
+		// newrelic.ConfigDebugLogger(os.Stdout),
 	)
-	return
+	return err
 }
 
 // HandleFunc Web handler 設定
+// TODO:問題によっては引数が変わる
 func HandleFunc(mux *goji.Mux, pattern *pat.Pattern, hdl http.HandlerFunc) {
 	whdl := hdl
 	if isEnable() {
@@ -62,6 +73,7 @@ func HandleFunc(mux *goji.Mux, pattern *pat.Pattern, hdl http.HandlerFunc) {
 }
 
 // Handle Web handler 設定
+// TODO:問題によっては引数が変わる
 func Handle(mux *goji.Mux, pattern *pat.Pattern, hdl http.Handler) {
 	whdl := hdl
 	if isEnable() {
@@ -100,4 +112,49 @@ func StartDatastoreSegment(tx *Transaction, sqlType, table, sql string) Datastor
 
 func isEnable() bool {
 	return app != nil
+}
+
+// MiddlewareNewRelicTransaction to create/end NewRelic transaction
+func MiddlewareNewRelicTransaction(inner http.Handler) http.Handler {
+	if !isEnable() {
+		mw := func(w http.ResponseWriter, r *http.Request) {
+			inner.ServeHTTP(w, r)
+		}
+		return http.HandlerFunc(mw)
+	}
+	mw := func(w http.ResponseWriter, r *http.Request) {
+		txn := app.StartTransaction(r.URL.Path)
+		defer txn.End()
+
+		r = newrelic.RequestWithTransactionContext(r, txn)
+		txn.SetWebRequestHTTP(r)
+		w = txn.SetWebResponse(w)
+		inner.ServeHTTP(w, r)
+	}
+	return http.HandlerFunc(mw)
+}
+
+// RequestWithContext RequestにNewRelicのContextをつける
+func RequestWithContext(ctx context.Context, req *http.Request) *http.Request {
+	if !isEnable() {
+		return req
+	}
+	txn := newrelic.FromContext(ctx)
+	req = newrelic.RequestWithTransactionContext(req, txn)
+	return req
+}
+
+// GetClient リクエスト送信クライアントを返す
+func GetClient() *http.Client {
+	if !isEnable() {
+		return DefaultClient
+	}
+
+	return client
+}
+
+// RequestDoWithContext リクエスト送信クライアントの振り分けとRequestにNewRelicのContextをつけて送信を行う
+func RequestDoWithContext(ctx context.Context, req *http.Request) (*http.Response, error) {
+	req = RequestWithContext(ctx, req)
+	return GetClient().Do(req)
 }

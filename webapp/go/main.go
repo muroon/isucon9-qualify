@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	//"github.com/muroon/newrelic_apm/apm"
 	"github.com/isucon/isucon9-qualify/webapp/go/apm"
 	"html/template"
 	"io/ioutil"
@@ -354,6 +355,9 @@ func main() {
 	defer dbx.Close()
 
 	mux := goji.NewMux()
+
+	// Middleware
+	mux.Use(apm.MiddlewareNewRelicTransaction)
 
 	// API
 	apm.HandleFunc(mux, pat.Post("/initialize"), postInitialize)
@@ -1072,6 +1076,7 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTransactions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 
 	user, errCode, errMsg := getUser(r)
 	if errMsg != "" {
@@ -1253,7 +1258,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			ssrTargeLen++
 
 			go func() {
-				ssr, err := APIShipmentStatus(shipmentServiceURL, &APIShipmentStatusReq{
+				ssr, err := APIShipmentStatus(ctx, shipmentServiceURL, &APIShipmentStatusReq{
 					ReserveID: shipping.ReserveID,
 				})
 				if err != nil {
@@ -1579,6 +1584,8 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 func postBuy(w http.ResponseWriter, r *http.Request) {
 	rb := reqBuy{}
 
+	ctx := r.Context()
+
 	err := json.NewDecoder(r.Body).Decode(&rb)
 	if err != nil {
 		outputErrorMsg(w, http.StatusBadRequest, "json decode error")
@@ -1635,7 +1642,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	var pstr *APIPaymentServiceTokenRes
 	var tokenErr error
 	go func() {
-		pstr, err = APIPaymentToken(getPaymentServiceURL(), &APIPaymentServiceTokenReq{
+		pstr, err = APIPaymentToken(ctx, getPaymentServiceURL(), &APIPaymentServiceTokenReq{
 			ShopID: PaymentServiceIsucariShopID,
 			Token:  rb.Token,
 			APIKey: PaymentServiceIsucariAPIKey,
@@ -1669,7 +1676,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	var scr *APIShipmentCreateRes
 	var shipErr error
 	go func() {
-		scr, err = APIShipmentCreate(getShipmentServiceURL(), &APIShipmentCreateReq{
+		scr, err = APIShipmentCreate(ctx, getShipmentServiceURL(), &APIShipmentCreateReq{
 			ToAddress:   buyer.Address,
 			ToName:      buyer.AccountName,
 			FromAddress: seller.Address,
@@ -1823,6 +1830,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 }
 
 func postShip(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	reqps := reqPostShip{}
 
 	err := json.NewDecoder(r.Body).Decode(&reqps)
@@ -1914,7 +1922,7 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	img, err := APIShipmentRequest(getShipmentServiceURL(), &APIShipmentRequestReq{
+	img, err := APIShipmentRequest(ctx, getShipmentServiceURL(), &APIShipmentRequestReq{
 		ReserveID: shipping.ReserveID,
 	})
 	if err != nil {
@@ -1953,6 +1961,8 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 }
 
 func postShipDone(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	reqpsd := reqPostShipDone{}
 
 	err := json.NewDecoder(r.Body).Decode(&reqpsd)
@@ -2043,7 +2053,7 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
+	ssr, err := APIShipmentStatus(ctx, getShipmentServiceURL(), &APIShipmentStatusReq{
 		ReserveID: shipping.ReserveID,
 	})
 	if err != nil {
@@ -2099,6 +2109,8 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 }
 
 func postComplete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	reqpc := reqPostComplete{}
 
 	err := json.NewDecoder(r.Body).Decode(&reqpc)
@@ -2197,7 +2209,7 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
+	ssr, err := APIShipmentStatus(ctx, getShipmentServiceURL(), &APIShipmentStatusReq{
 		ReserveID: shipping.ReserveID,
 	})
 	if err != nil {
