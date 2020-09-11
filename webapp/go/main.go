@@ -19,9 +19,10 @@ import (
 
 	_ "net/http/pprof"
 
-	_ "github.com/go-sql-driver/mysql"
+	//_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
+	_ "github.com/newrelic/go-agent/v3/integrations/nrmysql"
 	goji "goji.io"
 	"goji.io/pat"
 	"golang.org/x/crypto/bcrypt"
@@ -1030,6 +1031,8 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	t := apm.StartTransaction("getTransactions")
 	defer t.End()
 
+	//ctx := r.Context()
+
 	tx := dbx.MustBegin()
 	items := []Item{}
 	if itemID > 0 && createdAt > 0 {
@@ -1037,6 +1040,14 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		s := apm.StartDatastoreSegment(t, apm.DBSelect, "items",
 			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 		)
+		// 注意)
+		// SQL実行methodが下記のcontext.Contextを引数荷物者でないとついらい
+		// PingContext
+		// ExecContext
+		// QueryContext
+		// QueryRowContext
+		// BeginTx
+		//row := tx.QueryRowContext(ctx, "SELECT count(*) from tables")
 		err := tx.Select(&items,
 			"SELECT * FROM `items` WHERE (`seller_id` = ? OR `buyer_id` = ?) AND `status` IN (?,?,?,?,?) AND (`created_at` < ?  OR (`created_at` <= ? AND `id` < ?)) ORDER BY `created_at` DESC, `id` DESC LIMIT ?",
 			user.ID,
